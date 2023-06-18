@@ -1,0 +1,178 @@
+---
+title: "IMDB Movie Reviews Sentiment Statistical analysis"
+author: "Demeke Kasaw"
+date: "2023-06-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Project Overview
+
+I used the IMDb movie review dataset to perform sentiment analysis on movie reviews. Sentiment analysis involves determining the opinion expressed in a piece of text.
+
+
+#Data Source
+The dataset is taken from kaggle website as the information provided from fellow.ai.
+
+## Load the required libraries
+
+```{r}
+library(tm) # topic modeling
+library(e1071) # build model
+library(gmodels) # cross tabulation
+library(dplyr) # data manipulation
+library(readr) # read data
+library(tidytext)
+library(SnowballC)
+library(ggplot2)
+```
+
+## Import the dataset 
+
+```{r}
+movie_reviews <- read_csv("IMDB Dataset.csv")
+
+```
+
+## Explore the dataset
+
+```{r}
+glimpse(movie_reviews)
+
+# check the distribution of the sentiment
+movie_reviews |> 
+  count(sentiment)
+```
+
+##The data set has two columns and 50k observations
+##Tokenization
+
+```{r}
+
+reviews_df <- movie_reviews |> 
+ # select(review) |> 
+  unnest_tokens(word, review)
+
+head(reviews_df)
+
+reviews_df <- reviews_df |> 
+  mutate(stem = wordStem(word))
+
+reviews_df <- reviews_df |> 
+  anti_join(stop_words[stop_words$lexicon =='snowball',],by = "word")
+
+
+```
+
+```{r}
+
+reviews_df |> 
+  group_by(word) |> 
+  summarise(count = n()) |> 
+  arrange(desc(count)) |> 
+  head()
+
+# visualize 
+
+reviews_df |> 
+  count(word, sort = TRUE) |> 
+  mutate(word = reorder(word,n)) |> 
+  top_n(10) |> 
+  ggplot(aes(x = n, y = word))+
+  geom_col()+
+  labs(title = "Top 10 words in the review")
+```
+
+### Prepare for model building 
+The data has 50k observation, which relatively large data set to train the model on my personal laptop. So I decided to take random sample of 20k. 
+
+```{r}
+# convert the review texts into corpus
+set.seed(1234)
+movie_reviews <- sample_n(movie_reviews, size = 20000)
+reviews_corpus <- VCorpus(
+VectorSource(movie_reviews$review))
+print(reviews_corpus)
+
+# check actual corpus in the text
+as.character(reviews_corpus[[5]])
+```
+
+## data preparation for the model
+
+```{r}
+# clean the text 
+movie_revews_clean <- tm_map(reviews_corpus, content_transformer(tolower))
+movie_revews_clean <- tm_map(movie_revews_clean, removeNumbers)
+movie_revews_clean <- tm_map(movie_revews_clean, removeWords, stopwords())
+movie_revews_clean <- tm_map(movie_revews_clean, removePunctuation)
+movie_revews_clean <- tm_map(movie_revews_clean, stripWhitespace)
+```
+
+```{r}
+
+as.character(movie_revews_clean[[5]])
+# Tokenize as document term matrix
+movie_revews_dtm <- DocumentTermMatrix(movie_revews_clean)
+```
+
+#### Split the data set 
+
+```{r}
+# split the data set to train the model 
+movie_reviews_train <- movie_revews_dtm[1:15000,] # 75%
+movie_reviews_test <- movie_revews_dtm[15001:20000,] # 25%
+
+movie_reviews_train_labels <- movie_reviews[1:15000,]$sentiment # 75%
+movie_reviews_test_labels <- movie_reviews[15001:20000,]$sentiment# 25%
+
+# check the distribution of train and test data 
+
+prop.table(table(movie_reviews_train_labels))
+prop.table(table(movie_reviews_test_labels))
+
+# find terms that appear 5 times or more in the review
+review_freq_words_tr <- findFreqTerms(movie_reviews_train, 5)
+review_freq_words_ts <- findFreqTerms(movie_reviews_test, 5)
+
+# include only the frequent terms in the training and test data
+movie_review_freq_train <- movie_reviews_train[, review_freq_words_tr]
+movie_review_freq_test <- movie_reviews_test[, review_freq_words_ts]
+
+# function that will check the presence of the each term
+check_term <- function(x){
+  x <- ifelse(x> 0, "Yes", "No")
+}
+
+review_train <- apply(movie_review_freq_train, MARGIN = 2, check_term)
+review_test <- apply(movie_review_freq_test, MARGIN = 2, check_term)
+
+```
+### Build Model
+I used the Naive Bayes algorithm for this task. Naive Bayes classifiers have several advantages for text classification tasks. 
+
+Simplicity and Speed: 
+  Naive Bayes is a simple and fast algorithm
+  it is computationally efficient. 
+  It performs well with large data sets and high-dimensional feature spaces.
+
+Ease of Implementation:
+  it is easy to understand and interpret.
+  it has a relatively low complexity compared to more complex machine learning algorithms.
+
+Good Performance with Small Training Sets:
+it performs well even with small training data sets. 
+
+```{r}
+review_model <- naiveBayes(review_train, movie_reviews_train_labels)
+review_test_pred <- predict(review_model, review_test)
+
+# create confusion matrix to see the accuracy of the model
+CrossTable(review_test_pred,movie_reviews_test_labels,
+           prop.chisq = FALSE,
+           prop.t = FALSE, dnn = c("pred", "observed"))
+```
+Our model is very good with better accuracy of 85% with test dataset. 
